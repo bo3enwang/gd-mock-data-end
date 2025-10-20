@@ -2,7 +2,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import { createClient } from "redis";
 
-// 初始化 Redis 客户端
+// 初始化Redis客户端
 let redis: ReturnType<typeof createClient>;
 try {
   redis = createClient({
@@ -10,47 +10,42 @@ try {
   });
   await redis.connect();
 } catch (error) {
-  console.error("Redis 连接失败:", error);
-  throw new Error("Redis 连接初始化失败");
+  console.error("Redis连接失败:", error);
+  throw new Error("Redis连接初始化失败");
 }
 
 /**
- * 生成唯一的 trackId
- * 使用时间戳 + 随机数组合，确保唯一性
+ * 生成唯一trackId
+ * 时间戳+随机数组合确保唯一性
  */
 const generateTrackId = (): string => {
-  const timestamp = Date.now().toString(36); // 时间戳转36进制
-  const random = Math.random().toString(36).substring(2, 8); // 6位随机数
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 8);
   return `${timestamp}-${random}`;
 };
 
 /**
- * 处理 GET 请求 - 查询 track 记录
- * 支持通过 trackId 参数查询特定记录
+ * 查询track记录
+ * GET /api/track?trackId=xxx
  */
 export async function GET(request: NextRequest) {
   try {
     const trackId = request.nextUrl.searchParams.get("trackId");
 
     if (trackId) {
-      // 查询单个 track 记录
       const key = `track:${trackId}`;
-      const trackData = await redis.lRange(key, 0, -1); // 获取列表所有元素
+      const trackData = await redis.lRange(key, 0, -1);
 
-      if (trackData.length === 0) {
-        return NextResponse.json(
-          { error: "Track 记录不存在" },
-          { status: 404 }
-        );
-      }
+      // 反序列化数据
+      const parsedData = trackData.map((item) => JSON.parse(item));
 
       return NextResponse.json({
         trackId,
-        data: trackData,
-        length: trackData.length,
+        data: parsedData,
+        length: parsedData.length,
       });
     } else {
-      // 查询所有 trackId（通过扫描匹配键）
+      // 扫描所有track键
       const trackKeys = [];
       let cursor = "0";
       do {
@@ -62,43 +57,58 @@ export async function GET(request: NextRequest) {
         trackKeys.push(...reply.keys);
       } while (cursor !== "0");
 
-      // 提取 trackId（去掉前缀 "track:"）
       const trackIds = trackKeys.map((key) => key.replace("track:", ""));
-
       return NextResponse.json({
         total: trackIds.length,
         trackIds,
       });
     }
   } catch (error) {
-    console.error("查询 Track 失败:", error);
-    return NextResponse.json({ error: "查询 Track 记录失败" }, { status: 500 });
+    console.error("查询失败:", error);
+    return NextResponse.json({ error: "查询track记录失败" }, { status: 500 });
   }
 }
 
-/**
- * 处理 POST 请求 - 创建/新增 track 记录
- * 支持创建新 track 或向已有 track 添加数据
- */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { trackId, data } = body;
 
-    // 验证数据是否存在
+    // 验证数据有效性
     if (data === undefined || data === null) {
       return NextResponse.json(
-        { error: "请提供要添加的 track 数据" },
+        { error: "请提供要添加的track数据" },
         { status: 400 }
       );
     }
 
-    // 处理 trackId：如果没有提供则自动生成
+    // 统一处理为数组格式
+    const dataArray = Array.isArray(data) ? data : [data];
+
+    // 过滤空数据
+    const validData = dataArray.filter(
+      (item) => item !== undefined && item !== null
+    );
+    if (validData.length === 0) {
+      return NextResponse.json(
+        { error: "提供的数据为空或无效" },
+        { status: 400 }
+      );
+    }
+
+    // 确定目标trackId
     const targetTrackId = trackId || generateTrackId();
     const key = `track:${targetTrackId}`;
 
-    // 将数据添加到 Redis 列表（使用 LPUSH 从左侧添加，或 RPUSH 从右侧添加）
-    await redis.rPush(key, JSON.stringify(data)); // 序列化数据存储
+    // 序列化所有数据
+    const serializedData = validData.map((item) => JSON.stringify(item));
+
+    // 修复：批量添加到Redis列表（兼容不同版本客户端的正确写法）
+    // 方式1：使用扩展运算符传递多个参数（适用于大多数版本）
+    await redis.rPush(key, serializedData);
+
+    // 方式2：如果方式1报错，可改用数组作为第二个参数（部分客户端支持）
+    // await redis.rPush(key, serializedData);
 
     // 获取当前列表长度
     const length = await redis.lLen(key);
@@ -106,24 +116,26 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       trackId: targetTrackId,
+      addedCount: validData.length,
       currentLength: length,
-      message: trackId ? "数据已添加到现有 Track" : "新 Track 已创建并添加数据",
+      message: trackId
+        ? `已向现有track添加${validData.length}条数据`
+        : `已创建新track并添加${validData.length}条数据`,
     });
   } catch (error) {
-    console.error("创建/新增 Track 失败:", error);
-    return NextResponse.json(
-      { error: "创建/新增 Track 记录失败" },
-      { status: 500 }
-    );
+    console.error("添加失败:", error);
+    return NextResponse.json({ error: "添加track记录失败" }, { status: 500 });
   }
 }
-
-// 可选：处理 DELETE 请求 - 删除 track 记录
+/**
+ * 删除track记录
+ * DELETE /api/track?trackId=xxx
+ */
 export async function DELETE(request: NextRequest) {
   try {
     const trackId = request.nextUrl.searchParams.get("trackId");
     if (!trackId) {
-      return NextResponse.json({ error: "请提供 trackId" }, { status: 400 });
+      return NextResponse.json({ error: "请提供trackId" }, { status: 400 });
     }
 
     const key = `track:${trackId}`;
@@ -131,10 +143,10 @@ export async function DELETE(request: NextRequest) {
 
     return NextResponse.json({
       success: deletedCount > 0,
-      message: deletedCount > 0 ? "Track 记录已删除" : "Track 记录不存在",
+      message: deletedCount > 0 ? "track记录已删除" : "track记录不存在",
     });
   } catch (error) {
-    console.error("删除 Track 失败:", error);
-    return NextResponse.json({ error: "删除 Track 记录失败" }, { status: 500 });
+    console.error("删除失败:", error);
+    return NextResponse.json({ error: "删除track记录失败" }, { status: 500 });
   }
 }
