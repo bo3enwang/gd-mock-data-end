@@ -21,13 +21,14 @@ export function middleware(req: NextRequest) {
   const allowed = isAllowedOrigin(origin);
 
   const corsHeaders: Record<string, string> = {
-    "Access-Control-Allow-Methods": "*",
-    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
     "Access-Control-Max-Age": "86400",
   };
 
   if (allowed && origin) {
     corsHeaders["Access-Control-Allow-Origin"] = origin;
+    corsHeaders["Access-Control-Allow-Credentials"] = "true";
     corsHeaders["Vary"] = "Origin";
   }
 
